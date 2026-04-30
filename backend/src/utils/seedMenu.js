@@ -3,44 +3,61 @@ const Category = require("../models/Category");
 const MenuItem = require("../models/MenuItem");
 
 const seedItems = [
-  { name: "Chaap Thali", price: 110, category: "Thali", available: true, description: "House special chaap thali." },
-  { name: "Paneer Thali", price: 160, category: "Thali", available: true, description: "Paneer thali with accompaniments." },
-  { name: "Butter Roti", price: 15, category: "Bread", available: true, description: "Fresh butter roti." },
-  { name: "Plain Naan", price: 20, category: "Bread", available: true, description: "Tandoor plain naan." },
-  { name: "Garlic Naan", price: 25, category: "Bread", available: true, description: "Garlic flavored naan." },
-  { name: "Mix Veg", price: 150, category: "Main Course", available: true, description: "Seasonal mixed vegetables." },
-  { name: "Dal Makhni", price: 150, category: "Main Course", available: true, description: "Slow-cooked black dal." },
-  { name: "Paneer Butter Masala", price: 200, category: "Main Course", available: true, description: "Creamy paneer gravy." },
-  { name: "Veg Noodles", price: 120, category: "Snacks", available: true, description: "Stir-fried noodles." },
-  { name: "Burger", price: 100, category: "Snacks", available: true, description: "Classic veg burger." },
-  { name: "Pizza", price: 150, category: "Snacks", available: true, description: "Cheese veg pizza." },
-  { name: "Cold Coffee", price: 70, category: "Beverages", available: true, description: "Chilled cold coffee." },
-  { name: "Shake", price: 100, category: "Beverages", available: true, description: "Rich flavored shake." }
+  { name: "Chaap Thali", basePrice: 110, category: "Thali", itemType: "meal", description: "House special chaap thali." },
+  { name: "Paneer Thali", basePrice: 160, category: "Thali", itemType: "meal", description: "Paneer thali with accompaniments." },
+  { name: "Butter Roti", basePrice: 15, category: "Bread", itemType: "bread", description: "Fresh butter roti." },
+  { name: "Plain Naan", basePrice: 20, category: "Bread", itemType: "bread", description: "Tandoor plain naan." },
+  { name: "Garlic Naan", basePrice: 25, category: "Bread", itemType: "bread", description: "Garlic flavored naan." },
+  { name: "Mix Veg", basePrice: 150, category: "Main Course", itemType: "meal", description: "Seasonal mixed vegetables." },
+  { name: "Dal Makhni", basePrice: 150, category: "Main Course", itemType: "meal", description: "Slow-cooked black dal." },
+  { name: "Paneer Butter Masala", basePrice: 200, category: "Main Course", itemType: "meal", description: "Creamy paneer gravy." },
+  { name: "Veg Noodles", basePrice: 120, category: "Chinese", itemType: "regular", description: "Stir-fried noodles." },
+  { name: "Burger", basePrice: 100, category: "Burger", itemType: "regular", description: "Classic veg burger." },
+  { name: "Pizza", basePrice: 150, category: "Pizza", itemType: "regular", description: "Cheese veg pizza." },
+  { name: "Cold Coffee", basePrice: 70, category: "Coffee", itemType: "beverage", description: "Chilled cold coffee." },
+  { name: "Shake", basePrice: 100, category: "Mocktails", itemType: "beverage", description: "Rich flavored shake." },
 ];
 
 async function seed() {
   await connectDb();
 
   const categoryNames = [...new Set(seedItems.map((item) => item.category))];
+  const categoryMap = new Map();
+
   for (const name of categoryNames) {
-    await Category.updateOne({ name }, { $setOnInsert: { name } }, { upsert: true });
+    const normalizedName = Category.normalizeName(name);
+    const category = await Category.findOneAndUpdate(
+      { name: normalizedName },
+      { $setOnInsert: { name: normalizedName } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    ).collation({ locale: "en", strength: 2 });
+
+    categoryMap.set(name, category);
   }
 
   for (const item of seedItems) {
+    const category = categoryMap.get(item.category);
+
     await MenuItem.updateOne(
-      { name: item.name, category: item.category },
+      { name: item.name, category: category._id },
       {
         $set: {
-          price: item.price,
-          available: item.available,
+          basePrice: item.basePrice,
+          itemType: item.itemType,
+          pricingType: "single",
+          variants: [],
+          addons: [],
+          isAvailable: true,
+          isActive: true,
           description: item.description,
         },
         $setOnInsert: {
           name: item.name,
-          category: item.category,
+          slug: MenuItem.slugify(item.name),
+          category: category._id,
         },
       },
-      { upsert: true }
+      { upsert: true, runValidators: true, setDefaultsOnInsert: true }
     );
   }
 

@@ -174,7 +174,11 @@ async function getSalesAnalytics(req, res) {
       },
       { $sort: { salesAmount: -1, name: 1 } },
     ]),
-    MenuItem.find().select("_id name category").sort({ category: 1, name: 1 }).lean(),
+    MenuItem.find()
+      .select("_id name category")
+      .populate({ path: "category", select: "name" })
+      .sort({ name: 1 })
+      .lean(),
   ]);
 
   const summary = summaryRows[0] || { totalSales: 0, totalOrders: 0, totalQty: 0 };
@@ -202,11 +206,15 @@ async function getSalesAnalytics(req, res) {
   const itemSummary = menuItems.map((menuItem) => {
     const key = String(menuItem._id);
     const liveStats = statsById.get(key);
+    const categoryName =
+      menuItem.category && typeof menuItem.category === "object"
+        ? menuItem.category.name
+        : menuItem.category;
 
     return {
       itemId: key,
       name: menuItem.name,
-      category: menuItem.category,
+      category: categoryName || "Uncategorized",
       quantitySold: liveStats?.quantitySold || 0,
       salesAmount: roundToTwo(liveStats?.salesAmount || 0),
     };

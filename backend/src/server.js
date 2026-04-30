@@ -49,6 +49,8 @@ app.use("/api", (req, res, next) => {
 });
 
 app.use("/api/auth", authRoutes);
+app.use("/api/v2/menu", menuRoutes);
+app.use("/api/v2/categories", categoryRoutes);
 app.use("/api/menu", menuRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/sales", salesRoutes);
