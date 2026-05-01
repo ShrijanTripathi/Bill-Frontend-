@@ -3,7 +3,8 @@ const SaleArchive = require("../models/SaleArchive");
 const MenuItem = require("../models/MenuItem");
 const { normalizeSalePayload, resolvePeriodRange, roundToTwo } = require("../utils/salesAnalytics");
 const { publishSalesEvent, subscribeSalesEvents } = require("../utils/salesEvents");
-
+const mongoose = require("mongoose");
+const Category = require("../models/Category");
 function getPeriodLabel(period) {
   if (period === "today") return "Today";
   if (period === "week") return "This Week";
@@ -127,10 +128,125 @@ function streamSalesEvents(req, res) {
   });
 }
 
+// async function getSalesAnalytics(req, res) {
+//   const period = String(req.query.period || "today");
+//   const timeZone = resolveTimeZone(req.query.timeZone);
+//   const { start, end } = resolvePeriodRange(period, timeZone);
+//   const analyticsFilter = {
+//     billedAt: { $gte: start, $lt: end },
+//     isDeleted: false,
+//   };
+
+//   const [summaryRows, itemRows, menuItems] = await Promise.all([
+//     Sale.aggregate([
+//       { $match: analyticsFilter },
+//       {
+//         $group: {
+//           _id: null,
+//           totalSales: { $sum: "$grandTotal" },
+//           totalOrders: { $sum: 1 },
+//           totalQty: { $sum: "$totalQty" },
+//         },
+//       },
+//     ]),
+//     Sale.aggregate([
+//       { $match: analyticsFilter },
+//       { $unwind: "$items" },
+//       {
+//         $group: {
+//           _id: {
+//             itemRef: "$items.itemRef",
+//             name: "$items.name",
+//             category: "$items.category",
+//           },
+//           quantitySold: { $sum: "$items.qty" },
+//           salesAmount: { $sum: "$items.lineTotal" },
+//         },
+//       },
+//       {
+//         $project: {
+//           _id: 0,
+//           itemId: "$_id.itemRef",
+//           name: "$_id.name",
+//           category: "$_id.category",
+//           quantitySold: 1,
+//           salesAmount: 1,
+//         },
+//       },
+//       { $sort: { salesAmount: -1, name: 1 } },
+//     ]),
+//     MenuItem.find()
+//       .select("_id name category")
+//       .populate({ path: "category", select: "name" })
+//       .sort({ name: 1 })
+//       .lean(),
+//   ]);
+
+//   const summary = summaryRows[0] || { totalSales: 0, totalOrders: 0, totalQty: 0 };
+//   const statsById = new Map();
+//   const orphanRows = [];
+
+//   itemRows.forEach((row) => {
+//     const itemId = row.itemId ? String(row.itemId) : "";
+//     const normalized = {
+//       itemId: itemId || null,
+//       name: row.name,
+//       category: row.category || "Uncategorized",
+//       quantitySold: Number(row.quantitySold || 0),
+//       salesAmount: roundToTwo(row.salesAmount || 0),
+//     };
+
+//     if (itemId) {
+//       statsById.set(itemId, normalized);
+//       return;
+//     }
+
+//     orphanRows.push(normalized);
+//   });
+
+//   const itemSummary = menuItems.map((menuItem) => {
+//     const key = String(menuItem._id);
+//     const liveStats = statsById.get(key);
+//     const categoryName =
+//       menuItem.category && typeof menuItem.category === "object"
+//         ? menuItem.category.name
+//         : menuItem.category;
+
+//     return {
+//       itemId: key,
+//       name: menuItem.name,
+//       category: categoryName || "Uncategorized",
+//       quantitySold: liveStats?.quantitySold || 0,
+//       salesAmount: roundToTwo(liveStats?.salesAmount || 0),
+//     };
+//   });
+
+//   const unknownOrRemovedItems = orphanRows.filter(
+//     (row) => !itemSummary.some((item) => item.name === row.name && item.category === row.category)
+//   );
+
+//   return res.json({
+//     period,
+//     periodLabel: getPeriodLabel(period),
+//     range: {
+//       start: start.toISOString(),
+//       end: end.toISOString(),
+//       timeZone,
+//     },
+//     summary: {
+//       totalSales: roundToTwo(summary.totalSales || 0),
+//       totalOrders: Number(summary.totalOrders || 0),
+//       totalQty: Number(summary.totalQty || 0),
+//     },
+//     items: [...itemSummary, ...unknownOrRemovedItems],
+//   });
+// }
+
 async function getSalesAnalytics(req, res) {
   const period = String(req.query.period || "today");
   const timeZone = resolveTimeZone(req.query.timeZone);
   const { start, end } = resolvePeriodRange(period, timeZone);
+
   const analyticsFilter = {
     billedAt: { $gte: start, $lt: end },
     isDeleted: false,
@@ -176,12 +292,27 @@ async function getSalesAnalytics(req, res) {
     ]),
     MenuItem.find()
       .select("_id name category")
-      .populate({ path: "category", select: "name" })
       .sort({ name: 1 })
-      .lean(),
+      .lean()
   ]);
 
   const summary = summaryRows[0] || { totalSales: 0, totalOrders: 0, totalQty: 0 };
+
+  const validCategoryIds = menuItems
+    .map((item) => item.category)
+    .filter((value) => mongoose.isValidObjectId(value))
+    .map((value) => String(value));
+
+  const categories = validCategoryIds.length
+    ? await Category.find({ _id: { $in: validCategoryIds } })
+        .select("_id name")
+        .lean()
+    : [];
+
+  const categoryNameById = new Map(
+    categories.map((cat) => [String(cat._id), cat.name])
+  );
+
   const statsById = new Map();
   const orphanRows = [];
 
@@ -206,15 +337,22 @@ async function getSalesAnalytics(req, res) {
   const itemSummary = menuItems.map((menuItem) => {
     const key = String(menuItem._id);
     const liveStats = statsById.get(key);
-    const categoryName =
-      menuItem.category && typeof menuItem.category === "object"
-        ? menuItem.category.name
-        : menuItem.category;
+
+    let categoryName = "Uncategorized";
+    const rawCategory = menuItem.category;
+
+    if (rawCategory && typeof rawCategory === "object") {
+      categoryName = rawCategory.name || rawCategory.slug || "Uncategorized";
+    } else if (mongoose.isValidObjectId(rawCategory)) {
+      categoryName = categoryNameById.get(String(rawCategory)) || "Uncategorized";
+    } else if (rawCategory) {
+      categoryName = String(rawCategory);
+    }
 
     return {
       itemId: key,
       name: menuItem.name,
-      category: categoryName || "Uncategorized",
+      category: categoryName,
       quantitySold: liveStats?.quantitySold || 0,
       salesAmount: roundToTwo(liveStats?.salesAmount || 0),
     };
